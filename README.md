@@ -54,7 +54,7 @@ Reliability: GCE provides robust availability and minimal downtime, ensuring the
 **🚀 Getting Started**
 
 Clone the Repository:
-git clone https://github.com/yourusername/ai-chatbot-rag.git
+git clone https://github.com/Think-like-a-Terminator/AI_RAG_Chatbot.git
 
 Install Dependencies:
 pip install -r requirements.txt
