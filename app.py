@@ -6,27 +6,23 @@ import pandas as pd
 from aibot import aibot
 # send card command for bot to process sending webex json card
 from aisendcard import SendCardCommand
+# cryptography library for encryption/decryption
+from cryptography.fernet import Fernet
 
 
-# linux
-# encrypted webex api token
-# from cryptography.fernet import Fernet
-# with open('encryptionkeywebex.key', 'rb') as key_file:
-#     key2 = key_file.read()
-# cipher_suite2 = Fernet(key2)
-# with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
-#     encrypted_webex_api_key = encrypted_file.read()
-# decrypted_webex_api_key = cipher_suite2.decrypt(
-#     encrypted_webex_api_key).decode()
+# linux (can also use on local windows if cryptography is installed)
+# encrypted webex api token using cryptography library for encryption/decryption 
+# increases security by not storing api key on the server in plain text
+with open('encryptionkeywebex.key', 'rb') as key_file:
+    key2 = key_file.read()
+cipher_suite2 = Fernet(key2)
+with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
+    encrypted_webex_api_key = encrypted_file.read()
+decrypted_webex_api_key = cipher_suite2.decrypt(
+    encrypted_webex_api_key).decode()
 
 
-# local windows
-webexapikey = pd.read_csv('webexTeamsApiKey.csv')
-webexapikey = webexapikey['apikey'][0]
-webex_teams_api_token = webexapikey
-
-
-bot = WebexBot(teams_bot_token=webex_teams_api_token,
+bot = WebexBot(teams_bot_token=decrypted_webex_api_key,
                # approved_domains=['yourdomain.com']  # optional, add your email domain if you want to restrict the bot to only your domain users
                )
                

@@ -15,17 +15,16 @@ import re
 import pandas as pd
 import os
 from datetime import datetime, timedelta
-
+# cryptography library for encryption/decryption
+from cryptography.fernet import Fernet
 
 # html inputs for the responses
 from responsehtmls import promo_demo_html, about_us_html, communities_html, \
-    customer_success_html, insights_html, botaiprompt, lca_html, metrics_html, \
+    customer_success_html, insights_html, metrics_html, \
     renewals_html
 
 # Custom Webex Adaptive Cards
-from responsecards import SimpleCard, MenuCard, summaryCard, \
-    contact_update_demo_card, contact_update_demo3_card, reply_options_card, \
-    replyabcard, email_demo_card
+from responsecards import SimpleCard, MenuCard, summaryCard
 
 # actual text inputs into the cards and chatgpt prompts
 from responseinputs import promoimageurl, promomainTitle, \
@@ -40,8 +39,19 @@ from responseinputs import promoimageurl, promomainTitle, \
     insightsmainTitle, insightsclickopenurl, insightstitle
 
 
-CLEANR = re.compile('<.*?>')
 
+# enter open ai assistant ID for RAG
+assistantId = ''
+
+# enter google cloud datastore json key file for authentication
+credentials = service_account.Credentials.from_service_account_file(
+    '')
+
+datastore_client = datastore.Client(credentials=credentials)
+
+
+
+CLEANR = re.compile('<.*?>')
 
 def cleanhtml(raw_html):
     cleantext = re.sub(CLEANR, ' ', raw_html)
@@ -70,45 +80,71 @@ def redact_sensitive_info(text):
     return redacted_text
 
 
-credentials = service_account.Credentials.from_service_account_file(
-    'cx-dsxana-prod-iibi-62721217b52b-datastore-key.json')
+def write_to_DS_thread(thread_id, originalMessageId, room_id, emailAddress, activity, message, gpt_response, citations):
+    """
+    function to write message thread to DataStore db
+    """
+    data = {}
+    data['oai_thread_id'] = thread_id
+    data['id'] = originalMessageId
+    data['roomId'] = room_id
+    data['direction'] = 'Bot to Human'
+    data['type'] = 'Webex Teams Message'
+    data['purpose'] = 'RAG Answer'
+    data['sent_to'] = emailAddress
+    data['sent_from'] = 'AskorgBot'
+    timenow = datetime.now()
+    timenow = timenow.strftime('%Y-%m-%d %H:%M')
+    data['datetime'] = timenow
+    data['reply_email_sent'] = 'no'
+    data['agent_approved'] = 'not applicable'
+    data['inquiry_request_type'] = 'not applicable'
+    data['inquiry_sender_email'] = activity['actor']['emailAddress']
+    data['inquiry_recent_inquiry'] = message
+    createdDate = datetime.now()
+    createdDate = createdDate.strftime('%Y-%m-%d')
+    data['inquiry_created_date'] = createdDate
+    data['inquiry_suggested_response'] = 'not applicable'
+    data['actual_response'] = gpt_response
+    data['citations'] = citations
+    # no entity_key
+    complete_key = datastore_client.key('orgThreads')
+    task = datastore.Entity(key=complete_key,
+                            exclude_from_indexes=[
+                                "actual_response", "citations"]
+                            )
+    task.update(data)
+    datastore_client.put(task)
 
-datastore_client = datastore.Client(credentials=credentials)
 
 
 # linux (can also use on local windows if cryptography is installed)
-# encrypted openai key and webex api token
-# from cryptography.fernet import Fernet
-# with open('encryptionkeyoai.key', 'rb') as key_file:
-#     key1 = key_file.read()
-# with open('encryptionkeywebex.key', 'rb') as key_file:
-#     key2 = key_file.read()
-# cipher_suite1 = Fernet(key1)
-# cipher_suite2 = Fernet(key2)
-# with open('encrypted_oaiapikey.txt', 'rb') as encrypted_file:
-#     encrypted_oai_api_key = encrypted_file.read()
-# with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
-#     encrypted_webex_api_key = encrypted_file.read()
-# # Decrypt the API keys
-# decrypted_oai_api_key = cipher_suite1.decrypt(
-#     encrypted_oai_api_key).decode()
-# decrypted_webex_api_key = cipher_suite2.decrypt(
-#     encrypted_webex_api_key).decode()
+# encrypted webex api token using cryptography library for encryption/decryption 
+# increases security by not storing api key on the server in plain text
+with open('encryptionkeyoai.key', 'rb') as key_file:
+    key1 = key_file.read()
+with open('encryptionkeywebex.key', 'rb') as key_file:
+    key2 = key_file.read()
+cipher_suite1 = Fernet(key1)
+cipher_suite2 = Fernet(key2)
+with open('encrypted_oaiapikey.txt', 'rb') as encrypted_file:
+    encrypted_oai_api_key = encrypted_file.read()
+with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
+    encrypted_webex_api_key = encrypted_file.read()
+# Decrypt the API keys
+decrypted_oai_api_key = cipher_suite1.decrypt(
+    encrypted_oai_api_key).decode()
+decrypted_webex_api_key = cipher_suite2.decrypt(
+    encrypted_webex_api_key).decode()
 
 
-# local windows
-webexapikey = pd.read_csv('webexTeamsApiKey.csv')
-webexapikey = webexapikey['apikey'][0]
-webex_teams_api_token = webexapikey
-openaiapikey = pd.read_csv('webexTeamsApiKey.csv')
-openaiapikey = openaiapikey['apikey'][0]
 
-# if using cryptography for encryption/decryption change to decrypted_webex_api_key
+# use decrypted webex api token
 webexapi = WebexTeamsAPI(
-    access_token=webex_teams_api_token)
+    access_token=decrypted_webex_api_key)
 
-# if using cryptography for encryption/decryption change to decrypted_oai_api_key
-client = OpenAI(api_key=openaiapikey)
+# use decrypted openai api token
+client = OpenAI(api_key=decrypted_oai_api_key)
 
 
 class aibot(Command):
@@ -120,38 +156,27 @@ class aibot(Command):
         """
             WIP Pre-Response to send to user to indicate bot is working on inquiry or demo
         """
-        if str(message).lower().strip() == 'contact update demo' \
-                or str(message).lower().strip() == 'demo 1' \
-                or str(message).lower().strip() == 'demo 2' \
-                or str(message).lower().strip() == 'demo 3' \
-                or str(message).lower().strip() == 'email demo' \
-                or str(message).lower().strip() == 'help':
-            print(activity)
-        elif str(message).lower().strip() == 'y' \
-                or str(message).lower().strip() == 'n':
-            print(activity)
-        else:
-            text1 = TextBlock("Working on your inquiry...",
-                              weight=FontWeight.BOLDER,
-                              wrap=True, size=FontSize.DEFAULT,
-                              horizontalAlignment=HorizontalAlignment.CENTER,
-                              color=Colors.DARK
-                              )
-            text2 = TextBlock("Please hold tight while I process your request.",
-                              wrap=True, color=Colors.DARK
-                              )
-            card = AdaptiveCard(
-                body=[
-                    ColumnSet(columns=[Column(items=[text1, text2])]),
-                ])
-            return response_from_adaptive_card(card)
+        text1 = TextBlock("Working on your inquiry...",
+                            weight=FontWeight.BOLDER,
+                            wrap=True, size=FontSize.DEFAULT,
+                            horizontalAlignment=HorizontalAlignment.CENTER,
+                            color=Colors.DARK
+                            )
+        text2 = TextBlock("Please hold tight while I process your request.",
+                            wrap=True, color=Colors.DARK
+                            )
+        card = AdaptiveCard(
+            body=[
+                ColumnSet(columns=[Column(items=[text1, text2])]),
+            ])
+        return response_from_adaptive_card(card)
 
     def execute(self, message, attachment_actions, activity):
         """
             Actual Response to the user
             Checks for known commands, sends responses from 
             responsecards.py or responsetexts.py
-            Otherwise, have A.I./ChatGPT respond to general questions
+            Otherwise, have a LLM/ChatGPT respond to general questions
         """
 
         """
@@ -221,11 +246,9 @@ class aibot(Command):
 
         elif str(message).lower().strip() == 'about' or  \
                 str(message).lower().strip() == 'about us' or \
-                str(message).lower().strip() == 'what is org' or \
-                str(message).lower().strip() == 'who is org' or \
                 str(message).lower().strip() == 'org':
             """
-                if user types command 'about' or 'what is org' to the bot
+                if user types command 'about' or 'org' to the bot
                 then return menuCard from responsecards.py
                 using about inputs from responseinputs.py
             """
@@ -274,10 +297,6 @@ class aibot(Command):
                                             title=insightstitle
                                             )
             return response_from_adaptive_card(card)
-        elif str(message).lower().strip() == 'lca':
-            response = Response()
-            response.html = lca_html
-            return response
         elif str(message).lower().strip() == 'metrics':
             response = Response()
             response.html = metrics_html
@@ -445,9 +464,7 @@ class aibot(Command):
                 if len(results) == 0:
                     text1 = TextBlock("Sorry, " + str(custName) +
                                       " was not found in my records. \
-                                        Currently, we are still in the process \
-                                        of importing all Contact Hub \
-                                        and CDDATA Data. Please try again later.",
+                                        Please try again later.",
                                       weight=FontWeight.BOLDER, wrap=True,
                                       color=Colors.DARK
                                       )
@@ -510,20 +527,7 @@ class aibot(Command):
                             data_list, key=lambda x: x['END_DATE'], reverse=True)
                         dfRandDATA = pd.DataFrame(data_list)
                         dfRandDATA = dfRandDATA[['END_QUARTER', 'FORMATTED_END_QUARTER',
-                                         'FORMATTED_END_WEEK', 'END_DATE',
-                                         'REGION', 'SALES_LEVEL_2',
-                                         'SALES_LEVEL_6', 'COUNTRY', 'SUB_SEGMENT',
-                                         'OFFER', 'CX_PRODUCT_CATEGORY',
-                                         'BUSINESS_ENTITY',
-                                         'BUSINESS_SUB_ENTITY', 'CR_PARTY_ID',
-                                         'CR_PARTY_NAME', 'BE_GEO_ID',
-                                         'BE_GEO_NAME', 'LCA_PARTNER',
-                                         'CONTRACT_NUMBER',
-                                         'CAMPAIGN_EXCLUSION_SUB_CATEGORY',
-                                         'CX_BUSINESS_UNIT_ID',
-                                         'CX_BUSINESS_UNIT_NAME',
-                                         'DISTRIBUTOR_ID', 'DISTRIBUTOR_NAME',
-                                         'ATR', 'BOOKINGS'
+                                         'FORMATTED_END_WEEK', 'END_DATE', 'BOOKINGS'
                                          ]]
                         crpartyname = dfRandDATA['CR_PARTY_NAME'][0]
                         cxcustbuid = dfRandDATA['CX_BUSINESS_UNIT_ID'][0]
@@ -640,22 +644,22 @@ class aibot(Command):
                     d = dict(results[index])
                     data_list.append(d)
                 dsData = data_list[0]
-                cxcustbuid = dsData['CX_CUSTOMER_BU_ID']
-                crpartyid = dsData['PARTY_ID']
+                cxcustbuid = dsData['CUSTOMER_ID']
+                crpartyid = dsData['PERSON_ID']
                 try:
-                    crpartyname = dsData['SITE_PARTY_NAME']
+                    crpartyname = dsData['SITE_NAME']
                 except:
                     crpartyname = ''
                 firstName = dsData['FIRST_NAME']
                 lastName = dsData['LAST_NAME']
                 jobTitle = dsData['JOB_TITLE']
-                slLevel2 = dsData['SALES_LEVEL_2']
+                slLevel2 = dsData['LEVEL2']
                 slLevel6 = ''
                 country = dsData['SITE_ISO_COUNTRY_NAME']
                 contactStatus = dsData['CONTACT_STATUS']
                 isValidated = dsData['ISVALIDATED']
                 unsubscribe = dsData['UNSUBSCRIBE']
-                archList = dsData['ARCHITECTURE_LST']
+                archList = dsData['ARCH']
                 custSumTitle = "360 Summary: " + str(custName)
                 email = custName
                 # start of CDDATA Query
@@ -672,7 +676,7 @@ class aibot(Command):
                     data_list = sorted(
                         data_list, key=lambda x: x['BLAST_DATE'], reverse=True)
                     dfCDDATA = pd.DataFrame(data_list)
-                    slLevel6 = dfCDDATA['SALES_LEVEL_6'][0]
+                    slLevel6 = dfCDDATA['LEVEL6'][0]
                     csvfilename = 'CDDATA_' + email.replace('@', '_') + '.csv'
                     dfCDDATA.to_csv('./' + str(csvfilename))
                     csv_file_path = './' + str(csvfilename)
@@ -703,20 +707,12 @@ class aibot(Command):
                         data_list, key=lambda x: x['END_DATE'], reverse=True)
                     dfRandDATA = pd.DataFrame(data_list)
                     dfRandDATA = dfRandDATA[['END_QUARTER', 'FORMATTED_END_QUARTER',
-                                     'FORMATTED_END_WEEK', 'END_DATE', 'REGION',
-                                     'SALES_LEVEL_2', 'SALES_LEVEL_6', 'COUNTRY',
-                                     'SUB_SEGMENT', 'OFFER', 'CX_PRODUCT_CATEGORY',
-                                     'BUSINESS_ENTITY', 'BUSINESS_SUB_ENTITY',
-                                     'CR_PARTY_ID', 'CR_PARTY_NAME', 'BE_GEO_ID',
-                                     'BE_GEO_NAME', 'LCA_PARTNER', 'CONTRACT_NUMBER',
-                                     'CAMPAIGN_EXCLUSION_SUB_CATEGORY',
-                                     'CX_BUSINESS_UNIT_ID', 'CX_BUSINESS_UNIT_NAME',
-                                     'DISTRIBUTOR_ID', 'DISTRIBUTOR_NAME', 'ATR',
-                                     'BOOKINGS'
+                                     'FORMATTED_END_WEEK', 'END_DATE', 'PERSON_NAME', 
+                                     'BUSINESS_ID', 'BOOKINGS'
                                      ]]
-                    crpartyname = dfRandDATA['CR_PARTY_NAME'][0]
+                    crpartyname = dfRandDATA['PERSON_NAME'][0]
                     if cxcustbuid == 'nan' or cxcustbuid == 'None':
-                        cxcustbuid = dfRandDATA['CX_BUSINESS_UNIT_ID'][0]
+                        cxcustbuid = dfRandDATA['BUSINESS_ID'][0]
                     csvfilename = 'RandDATA_' + \
                         email.replace('@', '_') + '.csv'
                     dfRandDATA.to_csv('./' + str(csvfilename))
@@ -819,7 +815,6 @@ class aibot(Command):
                                    )
                 return response_from_adaptive_card(card)
         else:
-            assistantId = 'asst_7sOPzzsiVCgAWf5iPT9vWpf9'
             emailAddress = activity['actor']['emailAddress']
             room_id = activity['target']['globalId']
             originalMessageId = activity['id']
@@ -859,38 +854,9 @@ class aibot(Command):
                             file_citation.file_id)
                         citations.append(f"[{index}] {cited_file.filename}")
                 gpt_response = message_content.value
-                data = {}
-                data['oai_thread_id'] = thread_id
-                data['id'] = originalMessageId
-                data['roomId'] = room_id
-                data['direction'] = 'Bot to Human'
-                data['type'] = 'Webex Teams Message'
-                data['purpose'] = 'RAG Answer'
-                data['sent_to'] = emailAddress
-                data['sent_from'] = 'AskorgBot'
-                timenow = datetime.now()
-                timenow = timenow.strftime('%Y-%m-%d %H:%M')
-                data['datetime'] = timenow
-                data['reply_email_sent'] = 'no'
-                data['agent_approved'] = 'not applicable'
-                data['inquiry_request_type'] = 'not applicable'
-                data['inquiry_sender_email'] = activity['actor']['emailAddress']
-                data['inquiry_recent_inquiry'] = message
-                createdDate = datetime.now()
-                createdDate = createdDate.strftime('%Y-%m-%d')
-                data['inquiry_created_date'] = createdDate
-                data['inquiry_suggested_response'] = 'not applicable'
-                data['actual_response'] = gpt_response
-                data['citations'] = citations
-                # no entity_key
-                complete_key = datastore_client.key('orgThreads')
-                task = datastore.Entity(key=complete_key,
-                                        exclude_from_indexes=[
-                                            "actual_response", "citations"]
-                                        )
-                task.update(data)
-                datastore_client.put(task)
-
+                write_to_DS_thread(thread_id, originalMessageId, room_id,
+                                   emailAddress, activity, message, 
+                                   gpt_response, citations)
                 print('ai rag response: ', gpt_response)
                 return (gpt_response)
             else:
@@ -927,36 +893,8 @@ class aibot(Command):
                             file_citation.file_id)
                         citations.append(f"[{index}] {cited_file.filename}")
                 gpt_response = message_content.value
-                data = {}
-                data['oai_thread_id'] = thread_id
-                data['id'] = originalMessageId
-                data['roomId'] = room_id
-                data['direction'] = 'Bot to Human'
-                data['type'] = 'Webex Teams Message'
-                data['purpose'] = 'RAG Answer'
-                data['sent_to'] = emailAddress
-                data['sent_from'] = 'AskorgBot'
-                timenow = datetime.now()
-                timenow = timenow.strftime('%Y-%m-%d %H:%M')
-                data['datetime'] = timenow
-                data['reply_email_sent'] = 'no'
-                data['agent_approved'] = 'not applicable'
-                data['inquiry_request_type'] = 'not applicable'
-                data['inquiry_sender_email'] = activity['actor']['emailAddress']
-                data['inquiry_recent_inquiry'] = message
-                createdDate = datetime.now()
-                createdDate = createdDate.strftime('%Y-%m-%d')
-                data['inquiry_created_date'] = createdDate
-                data['inquiry_suggested_response'] = 'not applicable'
-                data['actual_response'] = gpt_response
-                data['citations'] = citations
-                # no entity_key
-                complete_key = datastore_client.key('orgThreads')
-                task = datastore.Entity(key=complete_key,
-                                        exclude_from_indexes=[
-                                            "actual_response", "citations"]
-                                        )
-                task.update(data)
-                datastore_client.put(task)
+                write_to_DS_thread(thread_id, originalMessageId, room_id,
+                                   emailAddress, activity, message, 
+                                   gpt_response, citations)
                 print('ai rag response: ', gpt_response)
                 return (gpt_response)

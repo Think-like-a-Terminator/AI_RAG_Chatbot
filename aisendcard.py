@@ -3,24 +3,18 @@ from webexteamssdk import WebexTeamsAPI
 import json
 import re
 import pandas as pd
-# from cryptography.fernet import Fernet
-
-# with open('encryptionkeywebex.key', 'rb') as key_file:
-#     key2 = key_file.read()
-
-# cipher_suite2 = Fernet(key2)
-
-# with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
-#     encrypted_webex_api_key = encrypted_file.read()
-
-# decrypted_webex_api_key = cipher_suite2.decrypt(
-#     encrypted_webex_api_key).decode()
+from cryptography.fernet import Fernet
 
 
-# local windows
-webexapikey = pd.read_csv('webexTeamsApiKey.csv')
-webexapikey = webexapikey['apikey'][0]
-webex_teams_api_token = webexapikey
+# linux (can also use on local windows if cryptography is installed)
+# encrypted openai key and webex api token using cryptography library for encryption/decryption so that the api key is not stored on the server in plain text
+with open('encryptionkeywebex.key', 'rb') as key_file:
+    key2 = key_file.read()
+cipher_suite2 = Fernet(key2)
+with open('encrypted_webexapikey.txt', 'rb') as encrypted_file:
+    encrypted_webex_api_key = encrypted_file.read()
+decrypted_webex_api_key = cipher_suite2.decrypt(
+    encrypted_webex_api_key).decode()
 
 
 class SendCardCommand(Command):
@@ -30,7 +24,7 @@ class SendCardCommand(Command):
             help_message="Send a card to specified recipients.\nUsage: /sendcard recipient1@example.com,recipient2@example.com {json}",
             card=None,
         )
-        self.webexapi = WebexTeamsAPI(access_token=webex_teams_api_token)
+        self.webexapi = WebexTeamsAPI(access_token=decrypted_webex_api_key)
 
     def execute(self, message, attachment_actions, activity):
         # get the roomId
@@ -48,10 +42,7 @@ class SendCardCommand(Command):
             return
 
         recipients = match.group(1)
-        print('this is recipients:', recipients)
         json_payload = match.group(2)
-        print('this is json_payload:', json_payload)
-
         recipient_emails = recipients.split(',')
 
         # Parse the JSON payload
